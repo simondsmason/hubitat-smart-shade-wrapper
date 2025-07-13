@@ -3,6 +3,7 @@
  * Manages multiple shade group configurations with individual monitoring
  * 
  * Version History:
+ * 1.03 - 2025-01-12 - Updated to support child app v1.02 logic overhaul
  * 1.02 - 2025-07-04 - Improved notification device UX, always visible with dynamic description
  * 1.01 - 2025-07-04 - Restructured as parent-child app to support multiple groups properly
  * 1.00 - 2025-07-04 - Initial single-instance release (deprecated)
@@ -57,7 +58,7 @@ preferences {
         }
         
         section("About") {
-            paragraph "Smart Shade Wrapper - Parent App v1.02"
+            paragraph "Smart Shade Wrapper - Parent App v1.03"
             paragraph "Monitors group shade operations and provides intelligent fallback control"
         }
     }

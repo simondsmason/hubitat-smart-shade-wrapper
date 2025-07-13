@@ -3,6 +3,14 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.03 - 2025-01-12 - Added individual RF device status synchronization
+ *                     - Refreshes individual RF devices after completion verification
+ *                     - Ensures RF devices show correct status matching verified shade positions
+ *                     - Provides clean device status across all devices in Hubitat
+ * 1.02 - 2025-01-12 - Major logic overhaul: combined completion check and remediation
+ *                     - Eliminated flawed early response check
+ *                     - Added Zigbee device refresh and targeted remedial commands
+ *                     - Fixed shade completion detection and fallback mechanism
  * 1.01 - 2025-07-04 - Initial child app release for individual group management
  * 
  * Copyright 2025 Simon Mason
@@ -53,15 +61,11 @@ preferences {
         section("Advanced Settings") {
             input "groupTravelTime", "number", title: "Group Travel Time (seconds)", 
                   defaultValue: 35, range: "15..120",
-                  description: "Time to wait for all shades in group to complete movement"
-            
-            input "zigbeeResponseDelay", "number", title: "Zigbee Response Check Delay (seconds)", 
-                  defaultValue: 15, range: "5..60",
-                  description: "How long to wait after group command before checking if individual Zigbee shades are responding. If a shade hasn't started moving by this time, a direct Zigbee command will be sent."
+                  description: "Time to wait for all shades in group to complete movement before checking completion and sending remedial commands"
             
             input "enableZigbeeFallback", "bool", title: "Enable Zigbee Fallback", 
                   defaultValue: true,
-                  description: "Send direct Zigbee commands to shades that don't respond to the Bond group command"
+                  description: "Send direct Zigbee commands to shades that don't complete the group operation successfully"
         }
         
         section("Debugging") {
@@ -74,8 +78,10 @@ preferences {
             paragraph "• The Group RF device represents a group controller on your Bond hub"
             paragraph "• When activated, the Bond hub sends RF commands to all individual shades simultaneously"
             paragraph "• Individual RF devices in Hubitat will show status changes, but this doesn't guarantee the physical shades actually moved (one-way RF communication)"
-            paragraph "• Zigbee devices provide real two-way feedback to confirm if shades are actually responding"
-            paragraph "• If a Zigbee device doesn't show movement after the configured delay, a direct Zigbee command will be sent as fallback"
+            paragraph "• After the travel time, the app refreshes all Zigbee devices to get current status"
+            paragraph "• Zigbee devices provide real two-way feedback to confirm if shades actually completed the operation"
+            paragraph "• If any shades failed to complete the operation, direct Zigbee commands will be sent as remedial action"
+            paragraph "• After completion verification, individual RF devices are refreshed to sync their status with the verified shade positions"
         }
     }
 }
@@ -87,6 +93,14 @@ def installed() {
 
 def updated() {
     log.debug "Shade Group updated: ${settings.groupName}"
+    
+    // Test debug logging
+    if (settings?.enableDetailedLogging) {
+        log.info "DEBUG TEST: Detailed logging is now ENABLED for ${settings.groupName}"
+    } else {
+        log.info "DEBUG TEST: Detailed logging is now DISABLED for ${settings.groupName}"
+    }
+    
     unsubscribe()
     initialize()
 }
@@ -141,16 +155,12 @@ def groupDeviceHandler(evt) {
     log.info "Group ${groupName} status changed to: ${status}"
     
     if (status in ["opening", "closing"]) {
-        // Group command started - begin monitoring for Zigbee responses
-        logDebug("Group ${groupName} started ${status} - checking for Zigbee responses")
+        // Group command started - begin monitoring for completion
+        logDebug("Group ${groupName} started ${status} - will check completion at travel time")
         
-        // Schedule quick check to see which Zigbee devices are responding
-        def responseDelay = settings?.zigbeeResponseDelay ?: 15
-        runIn(responseDelay, "checkZigbeeResponses", [data: [command: status]])
-        
-        // Schedule final completion check after full travel time
+        // Schedule combined completion check and remediation after travel time
         def travelTime = settings?.groupTravelTime ?: 35
-        runIn(travelTime + 5, "checkGroupCompletion")
+        runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: status]])
         
     } else if (status in ["open", "closed", "partially open"]) {
         // Group command completed
@@ -186,65 +196,119 @@ def individualZigbeePositionHandler(evt) {
     }
 }
 
-def checkZigbeeResponses(data) {
+def checkGroupCompletionAndRemediate(data) {
     def groupName = settings.groupName
     def command = data.command
     def enableFallback = settings?.enableZigbeeFallback ?: true
     
     if (!enableFallback) {
-        logDebug("${groupName} Zigbee fallback disabled, skipping early response check")
+        logDebug("${groupName} Zigbee fallback disabled, skipping completion check and remediation")
+        verifyGroupCompletion()
         return
     }
     
-    logDebug("${groupName} checking which Zigbee devices are responding to ${command}")
+    logDebug("${groupName} travel time reached - refreshing Zigbee devices and checking completion")
     
+    // Step 1: Refresh all Zigbee devices to get current status
     def shadeCount = settings?.shadeCount ?: 2
-    def nonResponsiveShades = []
+    def refreshCount = 0
     
-    // Check each shade to see if it's responding
+    for (int j = 1; j <= shadeCount; j++) {
+        def zigbeeDevice = settings["zigbeeShade${j}"]
+        if (zigbeeDevice) {
+            try {
+                zigbeeDevice.refresh()
+                refreshCount++
+                logDebug("Refreshed Zigbee device ${j}")
+            } catch (Exception e) {
+                log.error "Failed to refresh Zigbee device ${j}: ${e.message}"
+            }
+        }
+    }
+    
+    log.info "${groupName} refreshed ${refreshCount} Zigbee devices, waiting 10 seconds for responses"
+    
+    // Step 2: Wait 10 seconds for Zigbee devices to respond with current status
+    runIn(10, "analyzeShadeStatuses", [data: [command: command]])
+}
+
+def analyzeShadeStatuses(data) {
+    def groupName = settings.groupName
+    def command = data.command
+    def shadeCount = settings?.shadeCount ?: 2
+    
+    logDebug("${groupName} analyzing shade statuses after refresh")
+    
+    // Determine expected status based on original command
+    def expectedStatus = command == "opening" ? "open" : "closed"
+    def targetCommand = command == "opening" ? "open" : "close"
+    
+    def shadeStatuses = []
+    def failedShades = []
+    def successfulShades = 0
+    
+    // Step 3: Check each shade's current status after refresh
     for (int j = 1; j <= shadeCount; j++) {
         def zigbeeDevice = settings["zigbeeShade${j}"]
         def shadeName = "Shade ${j}"
         
         if (zigbeeDevice) {
-            def currentStatus = zigbeeDevice.currentValue("windowShade")
+            def status = zigbeeDevice.currentValue("windowShade")
+            def position = zigbeeDevice.currentValue("position") ?: 0
             
-            // Check if shade is moving in response to command
-            def isResponding = false
-            if (command == "opening" && currentStatus in ["opening", "open"]) {
-                isResponding = true
-            } else if (command == "closing" && currentStatus in ["closing", "closed"]) {
-                isResponding = true
+            shadeStatuses.add([
+                name: shadeName, 
+                status: status, 
+                position: position,
+                device: zigbeeDevice
+            ])
+            
+            logDebug("  ${shadeName}: ${status}, ${position}%")
+            
+            // Check if shade matches expected status
+            def isSuccessful = false
+            if (command == "opening") {
+                // For opening command, consider "open" or "partially open" as successful
+                isSuccessful = (status in ["open", "partially open"] && position > 0)
+            } else {
+                // For closing command, consider "closed" as successful
+                isSuccessful = (status == "closed" && position == 0)
             }
             
-            if (!isResponding) {
-                nonResponsiveShades.add([index: j, device: zigbeeDevice, name: shadeName])
-                logDebug("${shadeName} not responding (status: ${currentStatus})")
+            if (isSuccessful) {
+                successfulShades++
+                logDebug("  ${shadeName} ✓ successful")
             } else {
-                logDebug("${shadeName} responding correctly (status: ${currentStatus})")
+                failedShades.add([index: j, device: zigbeeDevice, name: shadeName, currentStatus: status, position: position])
+                logDebug("  ${shadeName} ✗ failed (expected: ${expectedStatus}, got: ${status}, position: ${position}%)")
             }
         }
     }
     
-    if (nonResponsiveShades.size() > 0) {
-        log.warn "${groupName} found ${nonResponsiveShades.size()} non-responsive shades, sending direct Zigbee commands"
+    log.info "${groupName} analysis complete: ${successfulShades}/${shadeCount} shades successful"
+    
+    // Step 4: Send remedial commands to failed shades
+    if (failedShades.size() > 0) {
+        log.warn "${groupName} found ${failedShades.size()} failed shades, sending remedial Zigbee commands"
         
-        // Send direct Zigbee commands to non-responsive shades
-        def targetCommand = command == "opening" ? "open" : "close"
-        
-        nonResponsiveShades.each { shade ->
+        failedShades.each { shade ->
             try {
-                log.info "Sending direct Zigbee ${targetCommand} to ${shade.name}"
+                log.info "Sending remedial Zigbee ${targetCommand} to ${shade.name} (current: ${shade.currentStatus}, position: ${shade.position}%)"
                 shade.device."${targetCommand}"()
             } catch (Exception e) {
-                log.error "Failed to send Zigbee ${targetCommand} to ${shade.name}: ${e.message}"
+                log.error "Failed to send remedial Zigbee ${targetCommand} to ${shade.name}: ${e.message}"
             }
         }
         
-        def message = "${groupName} sent direct Zigbee commands to ${nonResponsiveShades.size()} non-responsive shades"
+        def message = "${groupName} sent remedial Zigbee commands to ${failedShades.size()} failed shades"
         parent.sendNotification(message)
+        
+        // Schedule final verification after remedial commands
+        runIn(15, "verifyGroupCompletion")
+        
     } else {
-        log.info "${groupName} all shades responding correctly to group command"
+        log.info "${groupName} all shades completed successfully - no remedial action needed"
+        verifyGroupCompletion()
     }
 }
 
@@ -297,11 +361,18 @@ def verifyGroupCompletion() {
         
         log.info "${groupName} final status: ${groupStatus}, average position: ${Math.round(avgPosition * 10) / 10}%"
         
+        // Refresh individual RF devices to sync their status with verified final state
+        refreshIndividualRfDevices(groupStatus)
+        
     } else {
         log.warn "${groupName} group operation incomplete - ${successfulShades}/${shadeCount} shades reached final position"
         
         def message = "${groupName} operation incomplete - ${successfulShades}/${shadeCount} shades completed"
         parent.sendNotification(message)
+        
+        // Still refresh RF devices even if incomplete, to show current state
+        def groupStatus = calculateGroupStatus(shadeStatuses)
+        refreshIndividualRfDevices(groupStatus)
     }
 }
 
@@ -317,6 +388,30 @@ def calculateGroupStatus(shadeStatuses) {
     } else {
         return "partially open"
     }
+}
+
+def refreshIndividualRfDevices(groupStatus) {
+    def groupName = settings.groupName
+    def shadeCount = settings?.shadeCount ?: 2
+    
+    logDebug("${groupName} refreshing individual RF devices to sync status: ${groupStatus}")
+    
+    def refreshCount = 0
+    for (int j = 1; j <= shadeCount; j++) {
+        def rfDevice = settings["rfShade${j}"]
+        if (rfDevice) {
+            try {
+                // Force the RF device to update its status
+                rfDevice.refresh()
+                refreshCount++
+                logDebug("Refreshed RF device ${j}")
+            } catch (Exception e) {
+                log.error "Failed to refresh RF device ${j}: ${e.message}"
+            }
+        }
+    }
+    
+    log.info "${groupName} refreshed ${refreshCount} individual RF devices to sync with final status: ${groupStatus}"
 }
 
 def findShadeNameForDevice(deviceId, deviceType) {
