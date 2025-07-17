@@ -3,6 +3,10 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.04 - 2024-07-17 - Improved remediation and verification:
+ *                     - Increased Zigbee refresh wait time from 10s to 15s
+ *                     - Remediation post-command wait now uses user-configured travel time
+ *                     - Final verification now requires all shades to match the group command (not just any final state)
  * 1.03 - 2025-01-12 - Added individual RF device status synchronization
  *                     - Refreshes individual RF devices after completion verification
  *                     - Ensures RF devices show correct status matching verified shade positions
@@ -228,8 +232,8 @@ def checkGroupCompletionAndRemediate(data) {
     
     log.info "${groupName} refreshed ${refreshCount} Zigbee devices, waiting 10 seconds for responses"
     
-    // Step 2: Wait 10 seconds for Zigbee devices to respond with current status
-    runIn(10, "analyzeShadeStatuses", [data: [command: command]])
+    // Step 2: Wait 15 seconds for Zigbee devices to respond with current status (was 10)
+    runIn(15, "analyzeShadeStatuses", [data: [command: command]])
 }
 
 def analyzeShadeStatuses(data) {
@@ -304,11 +308,12 @@ def analyzeShadeStatuses(data) {
         parent.sendNotification(message)
         
         // Schedule final verification after remedial commands
-        runIn(15, "verifyGroupCompletion")
+        def travelTime = settings?.groupTravelTime ?: 35
+        runIn(travelTime, "verifyGroupCompletion", [data: [command: command]])
         
     } else {
         log.info "${groupName} all shades completed successfully - no remedial action needed"
-        verifyGroupCompletion()
+        verifyGroupCompletion([command: command])
     }
 }
 
@@ -316,14 +321,16 @@ def checkGroupCompletion() {
     verifyGroupCompletion()
 }
 
-def verifyGroupCompletion() {
+def verifyGroupCompletion(data) {
     def groupName = settings.groupName
     def shadeCount = settings?.shadeCount ?: 2
+    def command = data?.command
     
     logDebug("Verifying final completion for ${groupName}")
     
     def shadeStatuses = []
     def successfulShades = 0
+    def expectedStatus = command == "opening" ? "open" : "closed"
     
     // Check each shade in the group
     for (int j = 1; j <= shadeCount; j++) {
@@ -340,17 +347,21 @@ def verifyGroupCompletion() {
                 position: position,
                 device: zigbeeDevice
             ])
-            
-            // Count as successful if not in motion and has reasonable position
-            if (status in ["open", "closed", "partially open"]) {
+            // Require final state to match the desired state
+            def isSuccessful = false
+            if (command == "opening") {
+                isSuccessful = (status in ["open", "partially open"] && position > 0)
+            } else {
+                isSuccessful = (status == "closed" && position == 0)
+            }
+            if (isSuccessful) {
                 successfulShades++
             }
-            
-            logDebug("  ${shadeName}: ${status}, ${position}%")
+            logDebug("  ${shadeName}: ${status}, ${position}% (expected: ${expectedStatus})")
         }
     }
     
-    log.info "${groupName} final completion check: ${successfulShades}/${shadeCount} shades in final position"
+    log.info "${groupName} final completion check: ${successfulShades}/${shadeCount} shades in desired final position"
     
     if (successfulShades == shadeCount) {
         log.info "${groupName} group operation completed successfully"
@@ -365,9 +376,9 @@ def verifyGroupCompletion() {
         refreshIndividualRfDevices(groupStatus)
         
     } else {
-        log.warn "${groupName} group operation incomplete - ${successfulShades}/${shadeCount} shades reached final position"
+        log.warn "${groupName} group operation incomplete - ${successfulShades}/${shadeCount} shades reached desired final position"
         
-        def message = "${groupName} operation incomplete - ${successfulShades}/${shadeCount} shades completed"
+        def message = "${groupName} operation incomplete - ${successfulShades}/${shadeCount} shades matched the group command"
         parent.sendNotification(message)
         
         // Still refresh RF devices even if incomplete, to show current state
