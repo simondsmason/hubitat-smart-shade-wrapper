@@ -3,6 +3,10 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.05 - 2024-07-17 - Fixed premature completion verification:
+ *                     - Group completion verification now waits for travel time before checking
+ *                     - Prevents false "incomplete" notifications when group device reports completion before shades move
+ *                     - Ensures consistent timing for all completion checks regardless of group device response timing
  * 1.04 - 2024-07-17 - Improved remediation and verification:
  *                     - Increased Zigbee refresh wait time from 10s to 15s
  *                     - Remediation post-command wait now uses user-configured travel time
@@ -167,9 +171,12 @@ def groupDeviceHandler(evt) {
         runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: status]])
         
     } else if (status in ["open", "closed", "partially open"]) {
-        // Group command completed
-        logDebug("Group ${groupName} completed with status: ${status}")
-        verifyGroupCompletion()
+        // Group command completed - but wait for travel time before final verification
+        logDebug("Group ${groupName} completed with status: ${status} - waiting for travel time before final verification")
+        
+        // Schedule final verification after travel time to allow shades to move
+        def travelTime = settings?.groupTravelTime ?: 35
+        runIn(travelTime, "verifyGroupCompletion", [data: [command: status]])
     }
 }
 

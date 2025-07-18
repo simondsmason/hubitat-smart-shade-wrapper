@@ -127,6 +127,10 @@ Enable detailed logging in both parent and child apps to troubleshoot issues:
 - **v1.00** - Initial single-instance release (deprecated)
 
 ### Child App
+- **v1.05** - Fixed premature completion verification to prevent false "incomplete" notifications
+- **v1.04** - Improved remediation and verification with better timing controls
+- **v1.03** - Added individual RF device status synchronization
+- **v1.02** - Major logic overhaul with combined completion check and remediation
 - **v1.01** - Initial child app release for individual group management
 
 ## License
