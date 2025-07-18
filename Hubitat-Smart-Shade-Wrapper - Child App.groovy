@@ -3,6 +3,11 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.08 - 2025-01-18 - Implemented percentage-based verification system:
+ *                     - Added support for preset positions (25%, 50%, 75%, etc.)
+ *                     - Replaced binary open/closed logic with precise position comparison
+ *                     - Uses setPosition() for remedial commands instead of open()/close()
+ *                     - Handles partial positions and mechanical settling accurately
  * 1.07 - 2024-07-17 - Fixed premature verification from individual device handlers:
  *                     - Removed automatic verification triggers from individual Zigbee device status changes
  *                     - Prevents verification without proper command context that caused false incomplete notifications
@@ -259,6 +264,96 @@ def analyzeShadeStatuses(data) {
     
     logDebug("${groupName} analyzing shade statuses after refresh")
     
+    // Get target position from group device
+    def targetPosition = getTargetPosition()
+    if (targetPosition == null) {
+        log.warn "${groupName} unable to determine target position, falling back to binary logic"
+        analyzeShadeStatusesBinary(data)
+        return
+    }
+    
+    log.info "${groupName} using percentage-based verification - target position: ${targetPosition}%"
+    
+    def shadeStatuses = []
+    def failedShades = []
+    def successfulShades = 0
+    
+    // Step 3: Check each shade's current position after refresh
+    for (int j = 1; j <= shadeCount; j++) {
+        def zigbeeDevice = settings["zigbeeShade${j}"]
+        def shadeName = "Shade ${j}"
+        
+        if (zigbeeDevice) {
+            def status = zigbeeDevice.currentValue("windowShade")
+            def position = zigbeeDevice.currentValue("position") ?: 0
+            
+            shadeStatuses.add([
+                name: shadeName, 
+                status: status, 
+                position: position,
+                device: zigbeeDevice
+            ])
+            
+            logDebug("  ${shadeName}: ${status}, ${position}% (target: ${targetPosition}%)")
+            
+            // Check if shade matches target position exactly
+            def isSuccessful = isShadeAtTargetPosition(position, targetPosition)
+            
+            if (isSuccessful) {
+                successfulShades++
+                logDebug("  ${shadeName} ✓ successful (${position}% = ${targetPosition}%)")
+            } else {
+                failedShades.add([
+                    index: j, 
+                    device: zigbeeDevice, 
+                    name: shadeName, 
+                    currentStatus: status, 
+                    position: position,
+                    targetPosition: targetPosition
+                ])
+                logDebug("  ${shadeName} ✗ failed (${position}% ≠ ${targetPosition}%)")
+            }
+        }
+    }
+    
+    log.info "${groupName} analysis complete: ${successfulShades}/${shadeCount} shades successful"
+    
+    // Step 4: Send remedial commands to failed shades
+    if (failedShades.size() > 0) {
+        log.warn "${groupName} found ${failedShades.size()} failed shades, sending remedial Zigbee setPosition commands"
+        
+        failedShades.each { shade ->
+            try {
+                log.info "Sending remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name} (current: ${shade.position}%)"
+                shade.device.setPosition(shade.targetPosition)
+            } catch (Exception e) {
+                log.error "Failed to send remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name}: ${e.message}"
+            }
+        }
+        
+        def message = "${groupName} sent remedial setPosition commands to ${failedShades.size()} failed shades"
+        parent.sendNotification(message)
+        
+        // Schedule final verification after remedial commands
+        def travelTime = settings?.groupTravelTime ?: 35
+        runIn(travelTime, "verifyGroupCompletion", [data: [command: command, targetPosition: targetPosition]])
+        
+    } else {
+        log.info "${groupName} all shades completed successfully - no remedial action needed"
+        verifyGroupCompletion([command: command, targetPosition: targetPosition])
+    }
+}
+
+/**
+ * Fallback method using the original binary logic when position-based detection fails
+ */
+def analyzeShadeStatusesBinary(data) {
+    def groupName = settings.groupName
+    def command = data.command
+    def shadeCount = settings?.shadeCount ?: 2
+    
+    logDebug("${groupName} using binary verification fallback")
+    
     // Determine expected status based on original command
     def expectedStatus = command == "opening" ? "open" : "closed"
     def targetCommand = command == "opening" ? "open" : "close"
@@ -267,7 +362,7 @@ def analyzeShadeStatuses(data) {
     def failedShades = []
     def successfulShades = 0
     
-    // Step 3: Check each shade's current status after refresh
+    // Check each shade's current status after refresh
     for (int j = 1; j <= shadeCount; j++) {
         def zigbeeDevice = settings["zigbeeShade${j}"]
         def shadeName = "Shade ${j}"
@@ -285,7 +380,7 @@ def analyzeShadeStatuses(data) {
             
             logDebug("  ${shadeName}: ${status}, ${position}%")
             
-            // Check if shade matches expected status
+            // Check if shade matches expected status (original binary logic)
             def isSuccessful = false
             if (command == "opening") {
                 // For opening command, consider "open" or "partially open" as successful
@@ -305,9 +400,9 @@ def analyzeShadeStatuses(data) {
         }
     }
     
-    log.info "${groupName} analysis complete: ${successfulShades}/${shadeCount} shades successful"
+    log.info "${groupName} binary analysis complete: ${successfulShades}/${shadeCount} shades successful"
     
-    // Step 4: Send remedial commands to failed shades
+    // Send remedial commands to failed shades using binary commands
     if (failedShades.size() > 0) {
         log.warn "${groupName} found ${failedShades.size()} failed shades, sending remedial Zigbee commands"
         
@@ -341,12 +436,17 @@ def verifyGroupCompletion(data) {
     def groupName = settings.groupName
     def shadeCount = settings?.shadeCount ?: 2
     def command = data?.command
+    def targetPosition = data?.targetPosition
     
     logDebug("Verifying final completion for ${groupName}")
     
     def shadeStatuses = []
     def successfulShades = 0
-    def expectedStatus = command == "opening" ? "open" : "closed"
+    
+    // Try to get target position if not provided
+    if (targetPosition == null) {
+        targetPosition = getTargetPosition()
+    }
     
     // Check each shade in the group
     for (int j = 1; j <= shadeCount; j++) {
@@ -363,21 +463,31 @@ def verifyGroupCompletion(data) {
                 position: position,
                 device: zigbeeDevice
             ])
-            // Require final state to match the desired state
+            
+            // Use percentage-based verification if target position is available
             def isSuccessful = false
-            if (command == "opening") {
-                isSuccessful = (status in ["open", "partially open"] && position > 0)
+            if (targetPosition != null) {
+                isSuccessful = isShadeAtTargetPosition(position, targetPosition)
+                logDebug("  ${shadeName}: ${status}, ${position}% (target: ${targetPosition}%)")
             } else {
-                isSuccessful = (status == "closed" && position == 0)
+                // Fallback to binary logic
+                def expectedStatus = command == "opening" ? "open" : "closed"
+                if (command == "opening") {
+                    isSuccessful = (status in ["open", "partially open"] && position > 0)
+                } else {
+                    isSuccessful = (status == "closed" && position == 0)
+                }
+                logDebug("  ${shadeName}: ${status}, ${position}% (expected: ${expectedStatus})")
             }
+            
             if (isSuccessful) {
                 successfulShades++
             }
-            logDebug("  ${shadeName}: ${status}, ${position}% (expected: ${expectedStatus})")
         }
     }
     
-    log.info "${groupName} final completion check: ${successfulShades}/${shadeCount} shades in desired final position"
+    def positionInfo = targetPosition != null ? " (target: ${targetPosition}%)" : ""
+    log.info "${groupName} final completion check: ${successfulShades}/${shadeCount} shades in desired final position${positionInfo}"
     
     if (successfulShades == shadeCount) {
         log.info "${groupName} group operation completed successfully"
@@ -386,15 +496,15 @@ def verifyGroupCompletion(data) {
         def groupStatus = calculateGroupStatus(shadeStatuses)
         def avgPosition = shadeStatuses.collect { it.position }.sum() / shadeStatuses.size()
         
-        log.info "${groupName} final status: ${groupStatus}, average position: ${Math.round(avgPosition * 10) / 10}%"
+        log.info "${groupName} final status: ${groupStatus}, average position: ${Math.round(avgPosition * 10) / 10}%${positionInfo}"
         
         // Refresh individual RF devices to sync their status with verified final state
         refreshIndividualRfDevices(groupStatus)
         
     } else {
-        log.warn "${groupName} group operation incomplete - ${successfulShades}/${shadeCount} shades reached desired final position"
+        log.warn "${groupName} group operation incomplete - ${successfulShades}/${shadeCount} shades reached desired final position${positionInfo}"
         
-        def message = "${groupName} operation incomplete - ${successfulShades}/${shadeCount} shades matched the group command"
+        def message = "${groupName} operation incomplete - ${successfulShades}/${shadeCount} shades matched the target${positionInfo}"
         parent.sendNotification(message)
         
         // Still refresh RF devices even if incomplete, to show current state
@@ -458,6 +568,53 @@ def findShadeNameForDevice(deviceId, deviceType) {
     }
     
     return null
+}
+
+/**
+ * Determines the target position based on the group device's current position
+ * This handles both standard open/close commands and preset positions
+ */
+def getTargetPosition() {
+    def groupDevice = settings.groupRfDevice
+    if (!groupDevice) {
+        logDebug("No group device configured, defaulting to position-based detection")
+        return null
+    }
+    
+    def currentPosition = groupDevice.currentValue("position")
+    if (currentPosition != null) {
+        logDebug("Group device target position: ${currentPosition}%")
+        return currentPosition as Integer
+    }
+    
+    // Fallback to status-based detection for devices that don't report position
+    def currentStatus = groupDevice.currentValue("windowShade")
+    switch (currentStatus) {
+        case "open":
+            return 100
+        case "closed":
+            return 0
+        case "partially open":
+            // For partially open without position, we can't determine exact target
+            logDebug("Group device is partially open but no position available")
+            return null
+        default:
+            logDebug("Unknown group device status: ${currentStatus}")
+            return null
+    }
+}
+
+/**
+ * Determines if a shade's current position matches the target position
+ * Uses exact matching to catch all precision issues
+ */
+def isShadeAtTargetPosition(currentPosition, targetPosition) {
+    if (targetPosition == null || currentPosition == null) {
+        return false
+    }
+    
+    // Exact matching - no tolerance
+    return currentPosition == targetPosition
 }
 
 // Local debug logging method
