@@ -122,18 +122,26 @@ Enable detailed logging in both parent and child apps to troubleshoot issues:
 ## Version History
 
 ### Parent App
-- **v1.02** - Improved notification device UX, always visible with dynamic description
-- **v1.01** - Restructured as parent-child app to support multiple groups properly
-- **v1.00** - Initial single-instance release (deprecated)
+- **v1.04** (2025-01-18) - Updated to support child app v1.08 percentage-based verification system
+- **v1.03** (2025-01-12) - Updated to support child app v1.02 logic overhaul
+- **v1.02** (2025-07-04) - Improved notification device UX, always visible with dynamic description
+- **v1.01** (2025-07-04) - Restructured as parent-child app to support multiple groups properly
+- **v1.00** (2025-07-04) - Initial single-instance release (deprecated)
 
 ### Child App
-- **v1.07** - Fixed premature verification from individual device handlers
-- **v1.06** - Fixed command status conversion for verification logic
-- **v1.05** - Fixed premature completion verification to prevent false "incomplete" notifications
-- **v1.04** - Improved remediation and verification with better timing controls
-- **v1.03** - Added individual RF device status synchronization
-- **v1.02** - Major logic overhaul with combined completion check and remediation
-- **v1.01** - Initial child app release for individual group management
+- **v1.08** (2025-01-18) - **Major upgrade: Percentage-based verification system**
+  - Replaced binary open/closed logic with precise position comparison
+  - Added support for preset positions (25%, 50%, 75%, etc.)
+  - Uses `setPosition()` for remedial commands instead of `open()`/`close()`
+  - Exact matching (zero tolerance) catches mechanical settling issues
+  - Smart fallback to binary logic for devices without position support
+- **v1.07** (2024-07-17) - Fixed premature verification from individual device handlers
+- **v1.06** (2024-07-17) - Fixed command status conversion for verification logic
+- **v1.05** (2024-07-17) - Fixed premature completion verification to prevent false "incomplete" notifications
+- **v1.04** (2024-07-17) - Improved remediation and verification with better timing controls
+- **v1.03** (2025-01-12) - Added individual RF device status synchronization
+- **v1.02** (2025-01-12) - Major logic overhaul with combined completion check and remediation
+- **v1.01** (2025-07-04) - Initial child app release for individual group management
 
 ## License
 
