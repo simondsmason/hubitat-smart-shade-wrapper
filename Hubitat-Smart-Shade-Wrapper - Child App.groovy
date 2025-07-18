@@ -3,6 +3,10 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.06 - 2024-07-17 - Fixed command status conversion for verification:
+ *                     - Convert group device status ("open"/"closed") to command format ("opening"/"closing") for verification logic
+ *                     - Prevents incorrect expected status calculations when group device reports completion
+ *                     - Ensures verification logic correctly interprets the intended operation
  * 1.05 - 2024-07-17 - Fixed premature completion verification:
  *                     - Group completion verification now waits for travel time before checking
  *                     - Prevents false "incomplete" notifications when group device reports completion before shades move
@@ -174,9 +178,12 @@ def groupDeviceHandler(evt) {
         // Group command completed - but wait for travel time before final verification
         logDebug("Group ${groupName} completed with status: ${status} - waiting for travel time before final verification")
         
+        // Convert status to command format for verification logic
+        def command = status == "open" ? "opening" : "closing"
+        
         // Schedule final verification after travel time to allow shades to move
         def travelTime = settings?.groupTravelTime ?: 35
-        runIn(travelTime, "verifyGroupCompletion", [data: [command: status]])
+        runIn(travelTime, "verifyGroupCompletion", [data: [command: command]])
     }
 }
 
