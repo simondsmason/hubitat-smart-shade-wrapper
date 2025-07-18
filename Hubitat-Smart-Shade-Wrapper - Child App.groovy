@@ -3,6 +3,10 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.07 - 2024-07-17 - Fixed premature verification from individual device handlers:
+ *                     - Removed automatic verification triggers from individual Zigbee device status changes
+ *                     - Prevents verification without proper command context that caused false incomplete notifications
+ *                     - Verification now only occurs through scheduled completion checks with proper command parameters
  * 1.06 - 2024-07-17 - Fixed command status conversion for verification:
  *                     - Convert group device status ("open"/"closed") to command format ("opening"/"closing") for verification logic
  *                     - Prevents incorrect expected status calculations when group device reports completion
@@ -199,11 +203,9 @@ def individualZigbeeDeviceHandler(evt) {
     if (shadeName) {
         logDebug("Individual Zigbee device ${shadeName} status: ${evt.value}")
         
-        // If this was part of a group operation, check if group is complete
-        if (evt.value in ["open", "closed", "partially open"]) {
-            // Small delay to allow other devices to update, then check group
-            runIn(2, "verifyGroupCompletion")
-        }
+        // Note: Individual Zigbee device status changes should not trigger verification
+        // Verification is handled by the scheduled completion checks after group commands
+        // This prevents premature verification without proper command context
     }
 }
 
