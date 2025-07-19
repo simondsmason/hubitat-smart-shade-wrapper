@@ -3,6 +3,7 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.08.1 - 2025-01-18 - Added debug logging for runIn scheduling and method execution
  * 1.08 - 2025-01-18 - Implemented percentage-based verification system:
  *                     - Added support for preset positions (25%, 50%, 75%, etc.)
  *                     - Replaced binary open/closed logic with precise position comparison
@@ -181,6 +182,7 @@ def groupDeviceHandler(evt) {
         
         // Schedule combined completion check and remediation after travel time
         def travelTime = settings?.groupTravelTime ?: 35
+        log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate in ${travelTime} seconds at ${new Date(now() + (travelTime * 1000))}"
         runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: status]])
         
     } else if (status in ["open", "closed", "partially open"]) {
@@ -192,6 +194,7 @@ def groupDeviceHandler(evt) {
         
         // Schedule final verification after travel time to allow shades to move
         def travelTime = settings?.groupTravelTime ?: 35
+        log.info "DEBUG: Scheduling verifyGroupCompletion in ${travelTime} seconds at ${new Date(now() + (travelTime * 1000))}"
         runIn(travelTime, "verifyGroupCompletion", [data: [command: command]])
     }
 }
@@ -222,6 +225,7 @@ def individualZigbeePositionHandler(evt) {
 }
 
 def checkGroupCompletionAndRemediate(data) {
+    log.info "DEBUG: checkGroupCompletionAndRemediate STARTED at ${new Date()} with data: ${data}"
     def groupName = settings.groupName
     def command = data.command
     def enableFallback = settings?.enableZigbeeFallback ?: true
@@ -258,6 +262,7 @@ def checkGroupCompletionAndRemediate(data) {
 }
 
 def analyzeShadeStatuses(data) {
+    log.info "DEBUG: analyzeShadeStatuses STARTED at ${new Date()} with data: ${data}"
     def groupName = settings.groupName
     def command = data.command
     def shadeCount = settings?.shadeCount ?: 2
@@ -433,6 +438,7 @@ def checkGroupCompletion() {
 }
 
 def verifyGroupCompletion(data) {
+    log.info "DEBUG: verifyGroupCompletion STARTED at ${new Date()} with data: ${data}"
     def groupName = settings.groupName
     def shadeCount = settings?.shadeCount ?: 2
     def command = data?.command
