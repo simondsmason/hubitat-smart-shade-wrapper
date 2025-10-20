@@ -129,7 +129,12 @@ Enable detailed logging in both parent and child apps to troubleshoot issues:
 - **v1.00** (2025-07-04) - Initial single-instance release (deprecated)
 
 ### Child App
-- **v1.08** (2025-01-18) - **Major upgrade: Percentage-based verification system**
+- **v1.10** (2025-01-18) - **Two-phase verification system to reduce false failures**
+  - Phase 1: Initial check after 15 seconds
+  - Phase 2: Targeted refresh of failed shades, wait 8 seconds, re-check
+  - Only send remedial commands if still failed after refresh
+  - Catches cases where shades reach target but need refresh to report status
+- **v1.08** (2025-07-18) - **Major upgrade: Percentage-based verification system**
   - Replaced binary open/closed logic with precise position comparison
   - Added support for preset positions (25%, 50%, 75%, etc.)
   - Uses `setPosition()` for remedial commands instead of `open()`/`close()`
