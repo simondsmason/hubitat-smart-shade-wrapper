@@ -129,6 +129,11 @@ Enable detailed logging in both parent and child apps to troubleshoot issues:
 - **v1.00** (2025-07-04) - Initial single-instance release (deprecated)
 
 ### Child App
+- **v1.11** (2025-01-05) - **Added retry logic for failed remedial commands**
+  - Retries up to 3 times if shades fail after remedial commands
+  - Validates command hasn't changed before each retry (aborts if user reversed command)
+  - Only retries shades that are still failed (excludes successful shades)
+  - Improves reliability for stuck shades or communication issues
 - **v1.10** (2025-01-18) - **Two-phase verification system to reduce false failures**
   - Phase 1: Initial check after 15 seconds
   - Phase 2: Targeted refresh of failed shades, wait 8 seconds, re-check
