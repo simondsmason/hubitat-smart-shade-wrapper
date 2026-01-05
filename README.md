@@ -47,8 +47,8 @@ This app solves the common problem of unreliable RF-only shade control by adding
    - Configure global settings (debug logging, notifications)
 
 2. **Install Child App**
-   - Copy the child app code to Hubitat
-   - Install the "Smart Shade Wrapper - Child App"
+   - Deploy using browser automation: `python3 deploy_app.py "Hubitat-Smart-Shade-Wrapper - Child App.groovy" --auto`
+   - Or manually: Copy the child app code to Hubitat and install the "Smart Shade Wrapper - Child App"
    - The parent app will automatically reference the child app
 
 3. **Configure Shade Groups**
