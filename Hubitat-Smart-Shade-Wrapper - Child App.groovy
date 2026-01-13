@@ -3,6 +3,12 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
+ * 1.12 - 2026-01-13 - Added support for partial position commands (setPosition):
+ *                     - Subscribes to position attribute on group device to detect setPosition() calls
+ *                     - Handles partial positions (25%, 50%, 75%, etc.) in addition to open/closed
+ *                     - Added groupPositionHandler() to process position change events
+ *                     - Updated groupDeviceHandler() to handle "partially open" status as fallback
+ *                     - Ensures verification/remediation works for all position commands, not just open/closed
  * 1.11 - 2026-01-05 - Added retry logic for failed remedial commands:
  *                     - Retries up to 3 times if shades fail after remedial commands
  *                     - Validates command hasn't changed before each retry (aborts if user reversed command)
@@ -65,6 +71,12 @@ definition(
     importUrl: ""
 )
 
+/**
+ * Returns the current app version number
+ * This is used in all log statements to ensure version consistency
+ */
+String appVersion() { return "1.12" }
+
 preferences {
     page(name: "groupConfigPage", title: "Shade Group Configuration", install: true, uninstall: true) {
         section("Group Information") {
@@ -123,18 +135,18 @@ preferences {
 }
 
 def installed() {
-    log.debug "Shade Group installed: ${settings.groupName} (v1.11)"
+    log.debug "Shade Group installed: ${settings.groupName} (v${appVersion()})"
     initialize()
 }
 
 def updated() {
-    log.debug "Shade Group updated: ${settings.groupName} (v1.11)"
+    log.debug "Shade Group updated: ${settings.groupName} (v${appVersion()})"
     
     // Test debug logging
     if (settings?.enableDetailedLogging) {
-        log.info "DEBUG TEST: Detailed logging is now ENABLED for ${settings.groupName} (v1.11)"
+        log.info "DEBUG TEST: Detailed logging is now ENABLED for ${settings.groupName} (v${appVersion()})"
     } else {
-        log.info "DEBUG TEST: Detailed logging is now DISABLED for ${settings.groupName} (v1.11)"
+        log.info "DEBUG TEST: Detailed logging is now DISABLED for ${settings.groupName} (v${appVersion()})"
     }
     
     unsubscribe()
@@ -142,12 +154,12 @@ def updated() {
 }
 
 def uninstalled() {
-    log.debug "Shade Group uninstalled: ${settings.groupName} (v1.11)"
+    log.debug "Shade Group uninstalled: ${settings.groupName} (v${appVersion()})"
     unsubscribe()
 }
 
 def initialize() {
-    log.info "Initializing Shade Group: ${settings.groupName} (v1.11)"
+    log.info "Initializing Shade Group: ${settings.groupName} (v${appVersion()})"
     
     // Update app label
     app.updateLabel("${settings.groupName} - Shade Group")
@@ -162,6 +174,7 @@ def subscribeToDevices() {
     if (settings.groupRfDevice) {
         // Subscribe to group RF device
         subscribe(settings.groupRfDevice, "windowShade", "groupDeviceHandler")
+        subscribe(settings.groupRfDevice, "position", "groupPositionHandler")
         logDebug("Subscribed to group device: ${settings.groupRfDevice.displayName}")
         
         // Subscribe to individual devices
@@ -188,27 +201,71 @@ def groupDeviceHandler(evt) {
     def status = evt.value
     def groupName = settings.groupName
 
-    log.info "Group ${groupName} status changed to: ${status} (v1.11)"
-    log.info "DEBUG: groupDeviceHandler called with status: ${status}, event: ${evt} (v1.11)"
+    log.info "Group ${groupName} status changed to: ${status} (v${appVersion()})"
+    log.info "DEBUG: groupDeviceHandler called with status: ${status}, event: ${evt} (v${appVersion()})"
 
     // Always unschedule any previous jobs before scheduling a new one
     unschedule()
-    log.info "DEBUG: unschedule() called to cancel any pending jobs (v1.11)"
+    log.info "DEBUG: unschedule() called to cancel any pending jobs (v${appVersion()})"
 
     // Only trigger on 'open' or 'closed' (Bond group devices are one-way)
     if (status in ["open", "closed"]) {
-        log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate for status: ${status} (v1.11)"
+        log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate for status: ${status} (v${appVersion()})"
         def travelTime = settings?.groupTravelTime ?: 35
-        log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate in ${travelTime} seconds at ${new Date(now() + (travelTime * 1000))} (v1.11)"
-        log.info "DEBUG: About to call runIn(${travelTime}, 'checkGroupCompletionAndRemediate', [data: [command: ${status}]]) (v1.11)"
+        log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate in ${travelTime} seconds at ${new Date(now() + (travelTime * 1000))} (v${appVersion()})"
+        log.info "DEBUG: About to call runIn(${travelTime}, 'checkGroupCompletionAndRemediate', [data: [command: ${status}]]) (v${appVersion()})"
         try {
             runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: status]])
-            log.info "DEBUG: runIn() call for checkGroupCompletionAndRemediate completed successfully (v1.11)"
+            log.info "DEBUG: runIn() call for checkGroupCompletionAndRemediate completed successfully (v${appVersion()})"
         } catch (Exception e) {
-            log.error "DEBUG: runIn() call for checkGroupCompletionAndRemediate FAILED: ${e.message} (v1.11)"
+            log.error "DEBUG: runIn() call for checkGroupCompletionAndRemediate FAILED: ${e.message} (v${appVersion()})"
+        }
+    } else if (status == "partially open") {
+        // Fallback: Handle "partially open" by getting position from device
+        log.info "DEBUG: Group status 'partially open' detected - getting position from device (v${appVersion()})"
+        def targetPosition = getTargetPosition()
+        if (targetPosition != null && targetPosition != 0 && targetPosition != 100) {
+            // It's a partial position, trigger verification
+            def travelTime = settings?.groupTravelTime ?: 35
+            log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate for partial position: ${targetPosition}% (v${appVersion()})"
+            try {
+                runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: "setPosition", targetPosition: targetPosition]])
+                log.info "DEBUG: runIn() call for checkGroupCompletionAndRemediate completed successfully (v${appVersion()})"
+            } catch (Exception e) {
+                log.error "DEBUG: runIn() call for checkGroupCompletionAndRemediate FAILED: ${e.message} (v${appVersion()})"
+            }
+        } else {
+            log.info "DEBUG: Group status 'partially open' but unable to determine position - ignoring (v${appVersion()})"
         }
     } else {
-        log.info "DEBUG: Group status '${status}' not handled - not in ['open', 'closed'] (v1.11)"
+        log.info "DEBUG: Group status '${status}' not handled - not in ['open', 'closed', 'partially open'] (v${appVersion()})"
+    }
+}
+
+def groupPositionHandler(evt) {
+    def targetPosition = evt.value as Integer
+    def groupName = settings.groupName
+    
+    log.info "Group ${groupName} position changed to: ${targetPosition}% (v${appVersion()})"
+    log.info "DEBUG: groupPositionHandler called with position: ${targetPosition}%, event: ${evt} (v${appVersion()})"
+    
+    // Always unschedule any previous jobs before scheduling a new one
+    unschedule()
+    log.info "DEBUG: unschedule() called to cancel any pending jobs (v${appVersion()})"
+    
+    // Determine command label for logging (0=closed, 100=open, else=setPosition)
+    def command = targetPosition == 100 ? "open" : (targetPosition == 0 ? "closed" : "setPosition")
+    
+    log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate for position: ${targetPosition}% (command: ${command}) (v${appVersion()})"
+    def travelTime = settings?.groupTravelTime ?: 35
+    log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate in ${travelTime} seconds at ${new Date(now() + (travelTime * 1000))} (v${appVersion()})"
+    log.info "DEBUG: About to call runIn(${travelTime}, 'checkGroupCompletionAndRemediate', [data: [command: ${command}, targetPosition: ${targetPosition}]]) (v${appVersion()})"
+    
+    try {
+        runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: command, targetPosition: targetPosition]])
+        log.info "DEBUG: runIn() call for checkGroupCompletionAndRemediate completed successfully (v${appVersion()})"
+    } catch (Exception e) {
+        log.error "DEBUG: runIn() call for checkGroupCompletionAndRemediate FAILED: ${e.message} (v${appVersion()})"
     }
 }
 
@@ -238,23 +295,23 @@ def individualZigbeePositionHandler(evt) {
 }
 
 def checkGroupCompletionAndRemediate(data) {
-    log.info "DEBUG: checkGroupCompletionAndRemediate STARTED at ${new Date()} with data: ${data} (v1.11)"
+    log.info "DEBUG: checkGroupCompletionAndRemediate STARTED at ${new Date()} with data: ${data} (v${appVersion()})"
     
     def groupName = settings.groupName
     def command = data.command
     def enableFallback = settings?.enableZigbeeFallback ?: true
     
-    log.info "DEBUG: checkGroupCompletionAndRemediate - groupName: ${groupName}, command: ${command}, enableFallback: ${enableFallback} (v1.11)"
+    log.info "DEBUG: checkGroupCompletionAndRemediate - groupName: ${groupName}, command: ${command}, enableFallback: ${enableFallback} (v${appVersion()})"
     
     if (!enableFallback) {
         logDebug("${groupName} Zigbee fallback disabled, skipping completion check and remediation")
-        log.info "DEBUG: Zigbee fallback disabled, calling verifyGroupCompletion() directly (v1.11)"
+        log.info "DEBUG: Zigbee fallback disabled, calling verifyGroupCompletion() directly (v${appVersion()})"
         verifyGroupCompletion()
         return
     }
     
     logDebug("${groupName} travel time reached - refreshing Zigbee devices and checking completion")
-    log.info "DEBUG: Starting Zigbee device refresh process (v1.11)"
+    log.info "DEBUG: Starting Zigbee device refresh process (v${appVersion()})"
     
     // Step 1: Refresh all Zigbee devices to get current status
     def shadeCount = settings?.shadeCount ?: 2
@@ -268,42 +325,42 @@ def checkGroupCompletionAndRemediate(data) {
                 refreshCount++
                 logDebug("Refreshed Zigbee device ${j}")
             } catch (Exception e) {
-                log.error "Failed to refresh Zigbee device ${j}: ${e.message} (v1.11)"
+                log.error "Failed to refresh Zigbee device ${j}: ${e.message} (v${appVersion()})"
             }
         }
     }
     
-    log.info "${groupName} refreshed ${refreshCount} Zigbee devices, waiting 10 seconds for responses (v1.11)"
+    log.info "${groupName} refreshed ${refreshCount} Zigbee devices, waiting 10 seconds for responses (v${appVersion()})"
     
     // Step 2: Wait 15 seconds for Zigbee devices to respond with current status (was 10)
-    log.info "DEBUG: About to schedule analyzeShadeStatuses in 15 seconds (v1.11)"
+    log.info "DEBUG: About to schedule analyzeShadeStatuses in 15 seconds (v${appVersion()})"
     try {
         runIn(15, "analyzeShadeStatuses", [data: [command: command]])
-        log.info "DEBUG: runIn() call for analyzeShadeStatuses completed successfully (v1.11)"
+        log.info "DEBUG: runIn() call for analyzeShadeStatuses completed successfully (v${appVersion()})"
     } catch (Exception e) {
-        log.error "DEBUG: runIn() call for analyzeShadeStatuses FAILED: ${e.message} (v1.11)"
+        log.error "DEBUG: runIn() call for analyzeShadeStatuses FAILED: ${e.message} (v${appVersion()})"
     }
 }
 
 def analyzeShadeStatuses(data) {
-    log.info "DEBUG: analyzeShadeStatuses STARTED at ${new Date()} with data: ${data} (v1.11)"
+    log.info "DEBUG: analyzeShadeStatuses STARTED at ${new Date()} with data: ${data} (v${appVersion()})"
     
     def groupName = settings.groupName
     def command = data.command
     def shadeCount = settings?.shadeCount ?: 2
     
-    log.info "DEBUG: analyzeShadeStatuses - groupName: ${groupName}, command: ${command}, shadeCount: ${shadeCount} (v1.11)"
+    log.info "DEBUG: analyzeShadeStatuses - groupName: ${groupName}, command: ${command}, shadeCount: ${shadeCount} (v${appVersion()})"
     logDebug("${groupName} analyzing shade statuses after refresh")
     
     // Get target position from group device
     def targetPosition = getTargetPosition()
     if (targetPosition == null) {
-        log.warn "${groupName} unable to determine target position, falling back to binary logic (v1.11)"
+        log.warn "${groupName} unable to determine target position, falling back to binary logic (v${appVersion()})"
         analyzeShadeStatusesBinary(data)
         return
     }
     
-    log.info "${groupName} using percentage-based verification - target position: ${targetPosition}% (v1.11)"
+    log.info "${groupName} using percentage-based verification - target position: ${targetPosition}% (v${appVersion()})"
     
     def shadeStatuses = []
     def failedShades = []
@@ -347,19 +404,19 @@ def analyzeShadeStatuses(data) {
         }
     }
     
-    log.info "${groupName} analysis complete: ${successfulShades}/${shadeCount} shades successful (v1.11)"
+    log.info "${groupName} analysis complete: ${successfulShades}/${shadeCount} shades successful (v${appVersion()})"
     
     // Step 4: Two-phase verification - try refresh before remedial commands
     if (failedShades.size() > 0) {
-        log.info "${groupName} Phase 1 failed, attempting refresh and re-check for ${failedShades.size()} shades (v1.11)"
+        log.info "${groupName} Phase 1 failed, attempting refresh and re-check for ${failedShades.size()} shades (v${appVersion()})"
         
         // Phase 2: Send targeted refresh to failed shades only
         failedShades.each { shade ->
             try {
-                log.info "Sending refresh to failed shade ${shade.name} (current: ${shade.position}%) (v1.11)"
+                log.info "Sending refresh to failed shade ${shade.name} (current: ${shade.position}%) (v${appVersion()})"
                 shade.device.refresh()
             } catch (Exception e) {
-                log.error "Failed to refresh failed shade ${shade.name}: ${e.message} (v1.11)"
+                log.error "Failed to refresh failed shade ${shade.name}: ${e.message} (v${appVersion()})"
             }
         }
         
@@ -367,7 +424,7 @@ def analyzeShadeStatuses(data) {
         runIn(8, "recheckAfterRefresh", [data: [command: command, targetPosition: targetPosition]])
         
     } else {
-        log.info "${groupName} all shades completed successfully - no remedial action needed (v1.11)"
+        log.info "${groupName} all shades completed successfully - no remedial action needed (v${appVersion()})"
         verifyGroupCompletion([command: command, targetPosition: targetPosition])
     }
 }
@@ -376,14 +433,14 @@ def analyzeShadeStatuses(data) {
  * Phase 2 verification - re-check shades after targeted refresh
  */
 def recheckAfterRefresh(data) {
-    log.info "DEBUG: recheckAfterRefresh STARTED at ${new Date()} with data: ${data} (v1.11)"
+    log.info "DEBUG: recheckAfterRefresh STARTED at ${new Date()} with data: ${data} (v${appVersion()})"
     
     def groupName = settings.groupName
     def command = data.command
     def targetPosition = data.targetPosition
     def shadeCount = settings?.shadeCount ?: 2
     
-    log.info "DEBUG: recheckAfterRefresh - groupName: ${groupName}, command: ${command}, targetPosition: ${targetPosition} (v1.11)"
+    log.info "DEBUG: recheckAfterRefresh - groupName: ${groupName}, command: ${command}, targetPosition: ${targetPosition} (v${appVersion()})"
     logDebug("${groupName} Phase 2: re-checking shade statuses after targeted refresh")
     
     def shadeStatuses = []
@@ -428,18 +485,18 @@ def recheckAfterRefresh(data) {
         }
     }
     
-    log.info "${groupName} Phase 2 analysis complete: ${successfulShades}/${shadeCount} shades successful (v1.11)"
+    log.info "${groupName} Phase 2 analysis complete: ${successfulShades}/${shadeCount} shades successful (v${appVersion()})"
     
     // Step 5: Send remedial commands only if still failed after refresh
     if (failedShades.size() > 0) {
-        log.warn "${groupName} Phase 2 failed, sending remedial Zigbee setPosition commands to ${failedShades.size()} shades (v1.11)"
+        log.warn "${groupName} Phase 2 failed, sending remedial Zigbee setPosition commands to ${failedShades.size()} shades (v${appVersion()})"
         
         failedShades.each { shade ->
             try {
-                log.info "Sending remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name} (current: ${shade.position}%) (v1.11)"
+                log.info "Sending remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name} (current: ${shade.position}%) (v${appVersion()})"
                 shade.device.setPosition(shade.targetPosition)
             } catch (Exception e) {
-                log.error "Failed to send remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name}: ${e.message} (v1.11)"
+                log.error "Failed to send remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name}: ${e.message} (v${appVersion()})"
             }
         }
         
@@ -451,7 +508,7 @@ def recheckAfterRefresh(data) {
         runIn(travelTime, "verifyGroupCompletionWithRetry", [data: [command: command, targetPosition: targetPosition, retryCount: 0, failedShades: failedShades]])
         
     } else {
-        log.info "${groupName} Phase 2 successful - all shades reached target after refresh (v1.11)"
+        log.info "${groupName} Phase 2 successful - all shades reached target after refresh (v${appVersion()})"
         verifyGroupCompletion([command: command, targetPosition: targetPosition])
     }
 }
@@ -512,18 +569,18 @@ def analyzeShadeStatusesBinary(data) {
         }
     }
     
-    log.info "${groupName} binary analysis complete: ${successfulShades}/${shadeCount} shades successful (v1.11)"
+    log.info "${groupName} binary analysis complete: ${successfulShades}/${shadeCount} shades successful (v${appVersion()})"
     
     // Send remedial commands to failed shades using binary commands
     if (failedShades.size() > 0) {
-        log.warn "${groupName} found ${failedShades.size()} failed shades, sending remedial Zigbee commands (v1.11)"
+        log.warn "${groupName} found ${failedShades.size()} failed shades, sending remedial Zigbee commands (v${appVersion()})"
         
         failedShades.each { shade ->
             try {
-                log.info "Sending remedial Zigbee ${targetCommand} to ${shade.name} (current: ${shade.currentStatus}, position: ${shade.position}%) (v1.11)"
+                log.info "Sending remedial Zigbee ${targetCommand} to ${shade.name} (current: ${shade.currentStatus}, position: ${shade.position}%) (v${appVersion()})"
                 shade.device."${targetCommand}"()
             } catch (Exception e) {
-                log.error "Failed to send remedial Zigbee ${targetCommand} to ${shade.name}: ${e.message} (v1.11)"
+                log.error "Failed to send remedial Zigbee ${targetCommand} to ${shade.name}: ${e.message} (v${appVersion()})"
             }
         }
         
@@ -535,7 +592,7 @@ def analyzeShadeStatusesBinary(data) {
         runIn(travelTime, "verifyGroupCompletionWithRetry", [data: [command: command, targetPosition: null, retryCount: 0, failedShades: failedShades]])
         
     } else {
-        log.info "${groupName} all shades completed successfully - no remedial action needed (v1.11)"
+        log.info "${groupName} all shades completed successfully - no remedial action needed (v${appVersion()})"
         verifyGroupCompletion([command: command])
     }
 }
@@ -550,7 +607,7 @@ def checkGroupCompletion() {
  * Validates command hasn't changed before each retry
  */
 def verifyGroupCompletionWithRetry(data) {
-    log.info "DEBUG: verifyGroupCompletionWithRetry STARTED at ${new Date()} with data: ${data} (v1.11)"
+    log.info "DEBUG: verifyGroupCompletionWithRetry STARTED at ${new Date()} with data: ${data} (v${appVersion()})"
     
     def groupName = settings.groupName
     def command = data.command
@@ -559,12 +616,12 @@ def verifyGroupCompletionWithRetry(data) {
     def previousFailedShades = data.failedShades ?: []
     def maxRetries = 3
     
-    log.info "DEBUG: verifyGroupCompletionWithRetry - groupName: ${groupName}, command: ${command}, targetPosition: ${targetPosition}, retryCount: ${retryCount}/${maxRetries} (v1.11)"
+    log.info "DEBUG: verifyGroupCompletionWithRetry - groupName: ${groupName}, command: ${command}, targetPosition: ${targetPosition}, retryCount: ${retryCount}/${maxRetries} (v${appVersion()})"
     
     // Validate command hasn't changed (user may have reversed the command)
     def currentTarget = getTargetPosition()
     if (currentTarget != null && currentTarget != targetPosition) {
-        log.info "${groupName} command has changed (target changed from ${targetPosition}% to ${currentTarget}%) - abandoning retry loop (v1.11)"
+        log.info "${groupName} command has changed (target changed from ${targetPosition}% to ${currentTarget}%) - abandoning retry loop (v${appVersion()})"
         return
     }
     
@@ -580,7 +637,7 @@ def verifyGroupCompletionWithRetry(data) {
             
             if (isSuccessful) {
                 nowSuccessfulShades.add(shade.name)
-                log.info "${groupName} ${shade.name} now successful after retry ${retryCount} (${currentPosition}% = ${targetPosition}%) (v1.11)"
+                log.info "${groupName} ${shade.name} now successful after retry ${retryCount} (${currentPosition}% = ${targetPosition}%) (v${appVersion()})"
             } else {
                 stillFailedShades.add([
                     index: shade.index,
@@ -590,21 +647,21 @@ def verifyGroupCompletionWithRetry(data) {
                     position: currentPosition,
                     targetPosition: targetPosition
                 ])
-                log.info "${groupName} ${shade.name} still failed after retry ${retryCount} (${currentPosition}% ≠ ${targetPosition}%) (v1.11)"
+                log.info "${groupName} ${shade.name} still failed after retry ${retryCount} (${currentPosition}% ≠ ${targetPosition}%) (v${appVersion()})"
             }
         }
     }
     
     // If all shades are now successful, verify completion
     if (stillFailedShades.size() == 0) {
-        log.info "${groupName} all shades successful after retry ${retryCount} - verifying completion (v1.11)"
+        log.info "${groupName} all shades successful after retry ${retryCount} - verifying completion (v${appVersion()})"
         verifyGroupCompletion([command: command, targetPosition: targetPosition])
         return
     }
     
     // If we've reached max retries, give up
     if (retryCount >= maxRetries) {
-        log.warn "${groupName} reached maximum retry count (${maxRetries}) - ${stillFailedShades.size()} shades still failed (v1.11)"
+        log.warn "${groupName} reached maximum retry count (${maxRetries}) - ${stillFailedShades.size()} shades still failed (v${appVersion()})"
         def message = "${groupName} operation incomplete after ${maxRetries} retries - ${stillFailedShades.size()} shades failed to reach target (target: ${targetPosition}%)"
         parent.sendNotification(message)
         verifyGroupCompletion([command: command, targetPosition: targetPosition])
@@ -612,14 +669,14 @@ def verifyGroupCompletionWithRetry(data) {
     }
     
     // Retry: send remedial commands to still-failed shades
-    log.warn "${groupName} Retry ${retryCount + 1}/${maxRetries}: sending remedial Zigbee setPosition commands to ${stillFailedShades.size()} still-failed shades (v1.11)"
+    log.warn "${groupName} Retry ${retryCount + 1}/${maxRetries}: sending remedial Zigbee setPosition commands to ${stillFailedShades.size()} still-failed shades (v${appVersion()})"
     
     stillFailedShades.each { shade ->
         try {
-            log.info "Retry ${retryCount + 1}: Sending remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name} (current: ${shade.position}%) (v1.11)"
+            log.info "Retry ${retryCount + 1}: Sending remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name} (current: ${shade.position}%) (v${appVersion()})"
             shade.device.setPosition(shade.targetPosition)
         } catch (Exception e) {
-            log.error "Retry ${retryCount + 1}: Failed to send remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name}: ${e.message} (v1.11)"
+            log.error "Retry ${retryCount + 1}: Failed to send remedial Zigbee setPosition(${shade.targetPosition}) to ${shade.name}: ${e.message} (v${appVersion()})"
         }
     }
     
@@ -629,14 +686,14 @@ def verifyGroupCompletionWithRetry(data) {
 }
 
 def verifyGroupCompletion(data) {
-    log.info "DEBUG: verifyGroupCompletion STARTED at ${new Date()} with data: ${data} (v1.11)"
+    log.info "DEBUG: verifyGroupCompletion STARTED at ${new Date()} with data: ${data} (v${appVersion()})"
     
     def groupName = settings.groupName
     def shadeCount = settings?.shadeCount ?: 2
     def command = data?.command
     def targetPosition = data?.targetPosition
     
-    log.info "DEBUG: verifyGroupCompletion - groupName: ${groupName}, shadeCount: ${shadeCount}, command: ${command}, targetPosition: ${targetPosition} (v1.11)"
+    log.info "DEBUG: verifyGroupCompletion - groupName: ${groupName}, shadeCount: ${shadeCount}, command: ${command}, targetPosition: ${targetPosition} (v${appVersion()})"
     logDebug("Verifying final completion for ${groupName}")
     
     def shadeStatuses = []
@@ -686,33 +743,33 @@ def verifyGroupCompletion(data) {
     }
     
     def positionInfo = targetPosition != null ? " (target: ${targetPosition}%)" : ""
-    log.info "${groupName} final completion check: ${successfulShades}/${shadeCount} shades in desired final position${positionInfo} (v1.11)"
+    log.info "${groupName} final completion check: ${successfulShades}/${shadeCount} shades in desired final position${positionInfo} (v${appVersion()})"
     
     if (successfulShades == shadeCount) {
-        log.info "${groupName} group operation completed successfully (v1.11)"
+        log.info "${groupName} group operation completed successfully (v${appVersion()})"
         
         // Calculate group status and average position
         def groupStatus = calculateGroupStatus(shadeStatuses)
         def avgPosition = shadeStatuses.collect { it.position }.sum() / shadeStatuses.size()
         
-        log.info "${groupName} final status: ${groupStatus}, average position: ${Math.round(avgPosition * 10) / 10}%${positionInfo} (v1.11)"
+        log.info "${groupName} final status: ${groupStatus}, average position: ${Math.round(avgPosition * 10) / 10}%${positionInfo} (v${appVersion()})"
         
         // Refresh individual RF devices to sync their status with verified final state
-        log.info "DEBUG: About to call refreshIndividualRfDevices with groupStatus: ${groupStatus} (v1.11)"
+        log.info "DEBUG: About to call refreshIndividualRfDevices with groupStatus: ${groupStatus} (v${appVersion()})"
         refreshIndividualRfDevices(groupStatus)
-        log.info "DEBUG: refreshIndividualRfDevices call completed (v1.11)"
+        log.info "DEBUG: refreshIndividualRfDevices call completed (v${appVersion()})"
         
     } else {
-        log.warn "${groupName} group operation incomplete - ${successfulShades}/${shadeCount} shades reached desired final position${positionInfo} (v1.11)"
+        log.warn "${groupName} group operation incomplete - ${successfulShades}/${shadeCount} shades reached desired final position${positionInfo} (v${appVersion()})"
         
         def message = "${groupName} operation incomplete - ${successfulShades}/${shadeCount} shades matched the target${positionInfo}"
         parent.sendNotification(message)
         
         // Still refresh RF devices even if incomplete, to show current state
         def groupStatus = calculateGroupStatus(shadeStatuses)
-        log.info "DEBUG: About to call refreshIndividualRfDevices with groupStatus: ${groupStatus} (incomplete) (v1.11)"
+        log.info "DEBUG: About to call refreshIndividualRfDevices with groupStatus: ${groupStatus} (incomplete) (v${appVersion()})"
         refreshIndividualRfDevices(groupStatus)
-        log.info "DEBUG: refreshIndividualRfDevices call completed (incomplete) (v1.11)"
+        log.info "DEBUG: refreshIndividualRfDevices call completed (incomplete) (v${appVersion()})"
     }
 }
 
@@ -734,7 +791,7 @@ def refreshIndividualRfDevices(groupStatus) {
     def groupName = settings.groupName
     def shadeCount = settings?.shadeCount ?: 2
     
-    log.info "DEBUG: refreshIndividualRfDevices STARTED with groupStatus: ${groupStatus} (v1.11)"
+    log.info "DEBUG: refreshIndividualRfDevices STARTED with groupStatus: ${groupStatus} (v${appVersion()})"
     logDebug("${groupName} refreshing individual RF devices to sync status: ${groupStatus}")
     
     def refreshCount = 0
@@ -747,12 +804,12 @@ def refreshIndividualRfDevices(groupStatus) {
                 refreshCount++
                 logDebug("Refreshed RF device ${j}")
             } catch (Exception e) {
-                log.error "Failed to refresh RF device ${j}: ${e.message} (v1.11)"
+                log.error "Failed to refresh RF device ${j}: ${e.message} (v${appVersion()})"
             }
         }
     }
     
-    log.info "${groupName} refreshed ${refreshCount} individual RF devices to sync with final status: ${groupStatus} (v1.11)"
+    log.info "${groupName} refreshed ${refreshCount} individual RF devices to sync with final status: ${groupStatus} (v${appVersion()})"
 }
 
 def findShadeNameForDevice(deviceId, deviceType) {
@@ -825,12 +882,12 @@ def isShadeAtTargetPosition(currentPosition, targetPosition) {
 def logDebug(message) {
     // Check local setting first, then parent setting
     if (settings?.enableDetailedLogging) {
-        log.debug "Group ${settings?.groupName}: ${message} (v1.11)"
+        log.debug "Group ${settings?.groupName}: ${message} (v${appVersion()})"
     } else {
         // Try parent debug setting as backup
         def parentSettings = parent?.getParentSettings()
         if (parentSettings?.enableDebug) {
-            log.debug "Group ${settings?.groupName}: ${message} (v1.11)"
+            log.debug "Group ${settings?.groupName}: ${message} (v${appVersion()})"
         }
     }
 }
