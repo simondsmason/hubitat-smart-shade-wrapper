@@ -3,12 +3,6 @@
  * Configures and monitors a single shade group with individual device pairing
  * 
  * Version History:
- * 1.12 - 2026-01-13 - Added support for partial position commands (setPosition):
- *                     - Subscribes to position attribute on group device to detect setPosition() calls
- *                     - Handles partial positions (25%, 50%, 75%, etc.) in addition to open/closed
- *                     - Added groupPositionHandler() to process position change events
- *                     - Updated groupDeviceHandler() to handle "partially open" status as fallback
- *                     - Ensures verification/remediation works for all position commands, not just open/closed
  * 1.11 - 2026-01-05 - Added retry logic for failed remedial commands:
  *                     - Retries up to 3 times if shades fail after remedial commands
  *                     - Validates command hasn't changed before each retry (aborts if user reversed command)
@@ -75,7 +69,7 @@ definition(
  * Returns the current app version number
  * This is used in all log statements to ensure version consistency
  */
-String appVersion() { return "1.12" }
+String appVersion() { return "1.11" }
 
 preferences {
     page(name: "groupConfigPage", title: "Shade Group Configuration", install: true, uninstall: true) {
@@ -174,7 +168,6 @@ def subscribeToDevices() {
     if (settings.groupRfDevice) {
         // Subscribe to group RF device
         subscribe(settings.groupRfDevice, "windowShade", "groupDeviceHandler")
-        subscribe(settings.groupRfDevice, "position", "groupPositionHandler")
         logDebug("Subscribed to group device: ${settings.groupRfDevice.displayName}")
         
         // Subscribe to individual devices
@@ -220,52 +213,8 @@ def groupDeviceHandler(evt) {
         } catch (Exception e) {
             log.error "DEBUG: runIn() call for checkGroupCompletionAndRemediate FAILED: ${e.message} (v${appVersion()})"
         }
-    } else if (status == "partially open") {
-        // Fallback: Handle "partially open" by getting position from device
-        log.info "DEBUG: Group status 'partially open' detected - getting position from device (v${appVersion()})"
-        def targetPosition = getTargetPosition()
-        if (targetPosition != null && targetPosition != 0 && targetPosition != 100) {
-            // It's a partial position, trigger verification
-            def travelTime = settings?.groupTravelTime ?: 35
-            log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate for partial position: ${targetPosition}% (v${appVersion()})"
-            try {
-                runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: "setPosition", targetPosition: targetPosition]])
-                log.info "DEBUG: runIn() call for checkGroupCompletionAndRemediate completed successfully (v${appVersion()})"
-            } catch (Exception e) {
-                log.error "DEBUG: runIn() call for checkGroupCompletionAndRemediate FAILED: ${e.message} (v${appVersion()})"
-            }
-        } else {
-            log.info "DEBUG: Group status 'partially open' but unable to determine position - ignoring (v${appVersion()})"
-        }
     } else {
-        log.info "DEBUG: Group status '${status}' not handled - not in ['open', 'closed', 'partially open'] (v${appVersion()})"
-    }
-}
-
-def groupPositionHandler(evt) {
-    def targetPosition = evt.value as Integer
-    def groupName = settings.groupName
-    
-    log.info "Group ${groupName} position changed to: ${targetPosition}% (v${appVersion()})"
-    log.info "DEBUG: groupPositionHandler called with position: ${targetPosition}%, event: ${evt} (v${appVersion()})"
-    
-    // Always unschedule any previous jobs before scheduling a new one
-    unschedule()
-    log.info "DEBUG: unschedule() called to cancel any pending jobs (v${appVersion()})"
-    
-    // Determine command label for logging (0=closed, 100=open, else=setPosition)
-    def command = targetPosition == 100 ? "open" : (targetPosition == 0 ? "closed" : "setPosition")
-    
-    log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate for position: ${targetPosition}% (command: ${command}) (v${appVersion()})"
-    def travelTime = settings?.groupTravelTime ?: 35
-    log.info "DEBUG: Scheduling checkGroupCompletionAndRemediate in ${travelTime} seconds at ${new Date(now() + (travelTime * 1000))} (v${appVersion()})"
-    log.info "DEBUG: About to call runIn(${travelTime}, 'checkGroupCompletionAndRemediate', [data: [command: ${command}, targetPosition: ${targetPosition}]]) (v${appVersion()})"
-    
-    try {
-        runIn(travelTime, "checkGroupCompletionAndRemediate", [data: [command: command, targetPosition: targetPosition]])
-        log.info "DEBUG: runIn() call for checkGroupCompletionAndRemediate completed successfully (v${appVersion()})"
-    } catch (Exception e) {
-        log.error "DEBUG: runIn() call for checkGroupCompletionAndRemediate FAILED: ${e.message} (v${appVersion()})"
+        log.info "DEBUG: Group status '${status}' not handled - not in ['open', 'closed'] (v${appVersion()})"
     }
 }
 

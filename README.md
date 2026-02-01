@@ -129,12 +129,6 @@ Enable detailed logging in both parent and child apps to troubleshoot issues:
 - **v1.00** (2025-07-04) - Initial single-instance release (deprecated)
 
 ### Child App
-- **v1.12** (2026-01-13) - **Added support for partial position commands (setPosition)**
-  - Subscribes to position attribute on group device to detect setPosition() calls
-  - Handles partial positions (25%, 50%, 75%, etc.) in addition to open/closed
-  - Added groupPositionHandler() to process position change events
-  - Updated groupDeviceHandler() to handle "partially open" status as fallback
-  - Ensures verification/remediation works for all position commands, not just open/closed
 - **v1.11** (2026-01-05) - **Added retry logic for failed remedial commands**
   - Retries up to 3 times if shades fail after remedial commands
   - Validates command hasn't changed before each retry (aborts if user reversed command)
